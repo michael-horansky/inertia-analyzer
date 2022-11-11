@@ -12,7 +12,9 @@ from sympy.assumptions import global_assumptions
 from sympy.parsing.sympy_parser import parse_expr
 from sympy.matrices import Matrix, eye, zeros, ones, diag, GramSchmidt
 
-# Vector operations
+# -------------------------------------------------------------------------------------
+# ----------------------------- TENSOR OPERATIONS -------------------------------------
+# -------------------------------------------------------------------------------------
 
 def scalar_product(vec, k):
     result = [0]*len(vec)
@@ -76,9 +78,32 @@ def identity_matrix(d):
     return(res)
 
 
+# -------------------------------------------------------------------------------------
+# ---------------------------- INTEGRAL OPERATIONS ------------------------------------
+# -------------------------------------------------------------------------------------
+
+def multidimensional_integral(integrand, boundaries, debug=False):
+    # boundaries is a list with element = [param, lower, upper]. They go inwards, so we must flip.
+    res = integrand
+    for i in range(len(boundaries)-1, -1, -1):
+        res = sp.integrate(res, (boundaries[i][0], boundaries[i][1], boundaries[i][2]))
+        res = sp.simplify(res)
+    if debug:
+        debug_str = "  Calculating the integral "
+        for i in range(len(boundaries)):
+            debug_str += f"S_({boundaries[i][1]})^({boundaries[i][2]}) "
+        debug_str += str(integrand)
+        for i in range(len(boundaries)-1, -1, -1):
+            debug_str += f" d{boundaries[i][0]}"
+        debug_str += f" = {res}"
+        print(debug_str)
+    return(res)
 
 
-# Coordinate system constants and operations
+
+# -------------------------------------------------------------------------------------
+# ----------------------- COORDINATE SYSTEM MANAGEMENT --------------------------------
+# -------------------------------------------------------------------------------------
 
 coord_s_names = {
     'c':'cartesian',
@@ -96,6 +121,229 @@ coord_s_basis = {
     's':['r', 'theta', 'phi']
     }
 
+default_coord_intervals = {
+    'x':[-sp.oo, sp.oo],
+    'y':[-sp.oo, sp.oo],
+    'z':[-sp.oo, sp.oo],
+    'rho':[sp.parse_expr("0"), sp.oo],
+    'phi':[sp.parse_expr("0"), 2.0 * sp.pi],
+    'r':[sp.parse_expr("0"), sp.oo],
+    'theta':[sp.parse_expr("0"), sp.pi]
+    }
+
+jacobian = {
+    'c':sp.parse_expr('1'),
+    'p':sp.parse_expr('rho'),
+    's':sp.parse_expr('r**2*sin(theta)')
+    }
+
+def get_reserved_coordinate_parameters(coord_s):
+    res = []
+    for param in coord_s_basis[coord_s]:
+        res.append(sp.symbols(param))
+    return(res)
+
+def coordinate_shift_discrete(vectors_to_shift, shifting_vector):
+    # a' = a - v_shift
+    result_vectors = []
+    for i in range(len(vectors_to_shift)):
+        result_vectors.append([vectors_to_shift[i][0] - shifting_vector[0], vectors_to_shift[i][1] - shifting_vector[1], vectors_to_shift[i][2] - shifting_vector[2]])
+    return(result_vectors)
+
+def coordinate_shift_continuous(coord_s, func, shifting_vector):
+    cartesian_func = function_coordinate_transformation(func, coord_s, 'c')
+    cartesian_shifting_vector = tensor_coordinate_transformation(shifting_vector, coord_s, 'c')
+    cartesian_func.subs(coord_s_basis[coord_s][0], f"{coord_s_basis[coord_s][0]} - {cartesian_shifting_vector[0]}")
+    cartesian_func.subs(coord_s_basis[coord_s][1], f"{coord_s_basis[coord_s][1]} - {cartesian_shifting_vector[1]}")
+    cartesian_func.subs(coord_s_basis[coord_s][2], f"{coord_s_basis[coord_s][2]} - {cartesian_shifting_vector[2]}")
+    return(function_coordinate_transformation(cartesian_func, 'c', 'coord_s'))
+
+def coordinate_shift_boundary_intervals(coord_s, boundary_intervals, shifting_vector):
+    new_boundary_intervals = []
+    if coord_s == 'c':
+        for i in range(len(boundary_intervals)):
+            coord_param_index = coord_s_basis[coord_s].index(str(boundary_intervals[i][0]))
+            delta_param = shifting_vector[coord_param_index]
+            
+            cur_boundary_param, cur_boundary_lower, cur_boundary_upper = boundary_intervals[i][0], boundary_intervals[i][1] - delta_param, boundary_intervals[i][2] - delta_param
+            for j in range(3):
+                # if the index of the changing coordinate matches the index of the inspected coordinate, we shift the boundaries (which we've already done)
+                # otherwise, we substitute in the correct function of the inspected coordinate
+                if coord_param_index != j:
+                    cur_boundary_lower = cur_boundary_lower.subs(coord_s_basis[coord_s][j], f"{coord_s_basis[coord_s][j]}+{shifting_vector[j]}")
+                    cur_boundary_upper = cur_boundary_upper.subs(coord_s_basis[coord_s][j], f"{coord_s_basis[coord_s][j]}+{shifting_vector[j]}")
+            new_boundary_intervals.append([cur_boundary_param, cur_boundary_lower, cur_boundary_upper])
+    if coord_s == 'p':
+        if shifting_vector[0] != 0:
+            print("Holy moly! This is a bit too hard!")
+            quit()
+        for i in range(len(boundary_intervals)):
+            # first we shift z' = z - delta z
+            # then we sub in z = (z' + delta z) into all the other expressions
+            coord_param_index = coord_s_basis[coord_s].index(str(boundary_intervals[i][0]))
+            if coord_param_index == 2:
+                delta_param = shifting_vector[coord_param_index]
+            else:
+                delta_param = 0
+            new_boundary_intervals.append([boundary_intervals[i][0], boundary_intervals[i][1].subs(coord_s_basis[coord_s][2], f"{coord_s_basis[coord_s][2]}+{shifting_vector[2]}") - delta_param, boundary_intervals[i][2].subs(coord_s_basis[coord_s][2], f"{coord_s_basis[coord_s][2]}+{shifting_vector[2]}") - delta_param])
+            #new_boundary_intervals.append([boundary_intervals[i][0], boundary_intervals[i][1] - delta_param, boundary_intervals[i][2] - delta_param])
+    if coord_s == 's':
+        if shifting_vector[0] != 0:
+            print("Holy moly! This is a bit too hard!")
+            quit()
+        else:
+            new_boundary_intervals = boundary_intervals
+    return(new_boundary_intervals)
+
+def coordinate_transformation_single_vector(v, input_coord_s, output_coord_s):
+    # Not to be used by the user.
+    res = []
+    if input_coord_s == output_coord_s:
+        res = v
+    if input_coord_s == 'c':
+        if output_coord_s == 'p':
+            # cartesian -> cylindrical
+            res = [sp.sqrt(v[0]*v[0]+v[1]*v[1]), sp.atan2(v[1],v[0]), v[2]]
+        if output_coord_s == 's':
+            # cartesian -> spherical
+            res = [sp.sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]), sp.atan2(sp.sqrt(v[0]*v[0]+v[1]*v[1]),v[2]), sp.atan2(v[1],v[0])]
+    if input_coord_s == 'p':
+        if output_coord_s == 'c':
+            # cylindrical -> cartesian
+            res = [v[0]*sp.cos(v[1]), v[0]*sp.sin(v[1]), v[2]]
+        if output_coord_s == 's':
+            # cylindrical -> spherical
+            res = [sp.sqrt(v[0]*v[0]+v[2]*v[2]), sp.atan2(v[0],v[2]), v[1]]
+    if input_coord_s == 's':
+        if output_coord_s == 'c':
+            # spherical -> cartesian
+            res = [v[0] * sp.sin(v[1]) * sp.cos(v[2]), v[0] * sp.sin(v[1]) * sp.sin(v[2]), v[0] * sp.cos(v[1])]
+        if output_coord_s == 'p':
+            # spherical -> cylindrical
+            res = [v[0] * sp.sin(v[1]), v[2], v[0] * sp.cos(v[1])]
+    if res == []:
+        print("Vector conversion failed. ({input_coord_s}, {output_coord_s}) isn't in the supported conversions.")
+        return(v)
+    # standardize degenerate cases
+    if output_coord_s == 'p' and res[0] == 0:
+        res[1] = 0
+    if output_coord_s == 's' and res[0] == 0:
+        res[1] = 0
+        res[2] = 0
+    return([sp.refine(sp.simplify(res[0])), sp.refine(sp.simplify(res[1])), sp.refine(sp.simplify(res[2]))])
+        
+    
+
+def tensor_coordinate_transformation(vectors, input_coord_s, output_coord_s):
+    # User-based function. Can pass a vector or a list of vectors.
+    # Determine shape by checking if vectors[0] is a list (vector)
+    if type(vectors[0]) == list:
+        res = []
+        for v in vectors:
+            res.append(tensor_coordinate_transformation(v, input_coord_s, output_coord_s))
+        return(res)
+    else:
+        return(coordinate_transformation_single_vector(vectors, input_coord_s, output_coord_s))
+
+def coordinate_transformation_single_function(expression, input_coord_s, output_coord_s):
+    # here we just sub out reserved coordinate parameters with different ones. EZ!
+    #if input_coord_s == output_coord_s:
+    #    res = expression
+    res = expression
+    if input_coord_s == 'c':
+        if output_coord_s == 'p':
+            # cartesian -> cylindrical
+            res = res.subs(coord_s_basis[input_coord_s][0], f"{coord_s_basis[output_coord_s][0]}*cos({coord_s_basis[output_coord_s][1]})")
+            res = res.subs(coord_s_basis[input_coord_s][1], f"{coord_s_basis[output_coord_s][0]}*sin({coord_s_basis[output_coord_s][1]})")
+        if output_coord_s == 's':
+            # cartesian -> spherical
+            res = res.subs(coord_s_basis[input_coord_s][0], f"{coord_s_basis[output_coord_s][0]}*sin({coord_s_basis[output_coord_s][1]})*cos({coord_s_basis[output_coord_s][2]})")
+            res = res.subs(coord_s_basis[input_coord_s][1], f"{coord_s_basis[output_coord_s][0]}*sin({coord_s_basis[output_coord_s][1]})*sin({coord_s_basis[output_coord_s][2]})")
+            res = res.subs(coord_s_basis[input_coord_s][2], f"{coord_s_basis[output_coord_s][0]}*cos({coord_s_basis[output_coord_s][1]})")
+            #res = [sp.sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]), sp.atan2(sp.sqrt(v[0]*v[0]+v[1]*v[1]),v[2]), sp.atan2(v[1],v[0])]
+    if input_coord_s == 'p':
+        if output_coord_s == 'c':
+            # cylindrical -> cartesian
+            res = res.subs(coord_s_basis[input_coord_s][0], f"sqrt({coord_s_basis[output_coord_s][0]}**2+{coord_s_basis[output_coord_s][1]}**2)")
+            res = res.subs(coord_s_basis[input_coord_s][1], f"atan2({coord_s_basis[output_coord_s][1]},{coord_s_basis[output_coord_s][0]})")
+            #res = [v[0]*sp.cos(v[1]), v[0]*sp.sin(v[1]), v[2]]
+        if output_coord_s == 's':
+            # cylindrical -> spherical
+            res = res.subs(coord_s_basis[input_coord_s][0], f"{coord_s_basis[output_coord_s][0]}*sin({coord_s_basis[output_coord_s][1]})")
+            res = res.subs(coord_s_basis[input_coord_s][2], f"{coord_s_basis[output_coord_s][0]}*cos({coord_s_basis[output_coord_s][1]})")
+            #res = [sp.sqrt(v[0]*v[0]+v[2]*v[2]), sp.atan2(v[0],v[2]), v[1]]
+    if input_coord_s == 's':
+        if output_coord_s == 'c':
+            # spherical -> cartesian
+            res = res.subs(coord_s_basis[input_coord_s][0], f"sqrt({coord_s_basis[output_coord_s][0]}**2+{coord_s_basis[output_coord_s][1]}**2+{coord_s_basis[output_coord_s][2]}**2)")
+            res = res.subs(coord_s_basis[input_coord_s][1], f"atan2(sqrt({coord_s_basis[output_coord_s][0]}**2+{coord_s_basis[output_coord_s][1]}**2),{coord_s_basis[output_coord_s][2]})")
+            res = res.subs(coord_s_basis[input_coord_s][2], f"atan2({coord_s_basis[output_coord_s][1]},{coord_s_basis[output_coord_s][0]})")
+            
+            #res = [v[0] * sp.sin(v[1]) * sp.cos(v[2]), v[0] * sp.sin(v[1]) * sp.sin(v[2]), v[0] * sp.cos(v[1])]
+        if output_coord_s == 'p':
+            # spherical -> cylindrical
+            res = res.subs(coord_s_basis[input_coord_s][0], f"sqrt({coord_s_basis[output_coord_s][0]}**2+{coord_s_basis[output_coord_s][2]}**2)")
+            res = res.subs(coord_s_basis[input_coord_s][1], f"atan2({coord_s_basis[output_coord_s][0]},{coord_s_basis[output_coord_s][2]})")
+            #res = [v[0] * sp.sin(v[1]), v[2], v[0] * sp.cos(v[1])]
+    #if res == expression:
+    #    print("Function conversion failed. ({input_coord_s} -> {output_coord_s}) isn't in the supported conversions.")
+    #    return(res)
+    #return([sp.simplify(res[0]), sp.simplify(res[1]), sp.simplify(res[2])])
+    return(sp.simplify(res))
+
+def function_coordinate_transformation(expressions, input_coord_s, output_coord_s):
+    # User-based function. Can pass a func or a list of funcs.
+    # Determine shape by checking if expressions is a list
+    if type(expressions) == list:
+        res = []
+        for expr in expressions:
+            res.append(function_coordinate_transformation(expr, input_coord_s, output_coord_s))
+        return(res)
+    elif type(expressions) == str:
+        return(coordinate_transformation_single_function(sp.parse_expr(expressions), input_coord_s, output_coord_s))
+    else:
+        return(coordinate_transformation_single_function(expressions, input_coord_s, output_coord_s))
+
+# Boundary intervals ordering function
+def order_boundary_intervals(boundary_intervals):
+    N = len(boundary_intervals)
+    index_symbols = []
+    dependency_list = []
+    result = []
+    for item in boundary_intervals:
+        index_symbols.append(item[0])
+    for item in boundary_intervals:
+        cur_dependency_list = []
+        cur_free_symbols = list(item[1].free_symbols) + list(item[2].free_symbols)
+        for index_symbol in index_symbols:
+            if index_symbol in cur_free_symbols:
+                cur_dependency_list.append(index_symbol)
+        dependency_list.append([item[0], cur_dependency_list])
+    
+    # Collapse the dependency list
+    while(len(dependency_list)>0):
+        # Look for an item with no dependency
+        cur_item = False
+        for i in range(len(dependency_list)):
+            if len(dependency_list[i][1])==0:
+                # item's index becomes cur_index, cur_index increases
+                result.append(boundary_intervals[index_symbols.index(dependency_list[i][0])])
+                cur_item = dependency_list.pop(i)[0]
+                break
+        # check if we found a dependency-free item
+        if cur_item == False:
+            return(False)
+        # remove dependency
+        for i in range(len(dependency_list)):
+            if cur_item in dependency_list[i][1]:
+                dependency_list[i][1].remove(cur_item)
+    return(result)
+
+# -------------------------------------------------------------------------------------
+# -------------------------- ASSUMPTIONS MANAGEMENT -----------------------------------
+# -------------------------------------------------------------------------------------
+
+
 def yesno_input(text, default = True, margin = 2):
     print(' '*margin + text, end='')
     default_descriptor = ('yes' if default else 'no')
@@ -103,7 +351,7 @@ def yesno_input(text, default = True, margin = 2):
         raw_answer = input(' [y/n] (empty input=' + default_descriptor + '): ')
         if raw_answer == '':
             return(default)
-        if raw_answer.lower() in ['y', 'yes', 'you got it boss']:
+        if raw_answer.lower() in ['y', 'yes', 'you got it boss', 'google en passant']:
             return(True)
         if raw_answer.lower() in ['n', 'no' , 'get fucked'     ]:
             return(False)
@@ -162,6 +410,12 @@ def get_coord_positive_assumptions(coord_s, coord_free_symbols, ask_user = True)
         print("  Error: coordinate system not supported by get_coord_positive_assumptions. Returning an empty dictionary.")
     return(queried_assumptions_dict, conditional_assumptions_dict)
 
+# Automatically create assumptions for reserved coordinate parameters
+# TODO
+def reserved_coord_param_assumptions():
+    print("lol")
+
+
 # Commit conditional assumptions and return descriptor string 
 
 def full_commit_conditional_assumptions(conditional_assumptions_dict):
@@ -179,62 +433,13 @@ def full_commit_conditional_assumptions(conditional_assumptions_dict):
     for cur_symbol in cur_symbols:
 """
 
-def coordinate_shift(vectors_to_shift, shifting_vector):
-    # a' = a - v_shift
-    result_vectors = []
-    for i in range(len(vectors_to_shift)):
-        result_vectors.append([vectors_to_shift[i][0] - shifting_vector[0], vectors_to_shift[i][1] - shifting_vector[1], vectors_to_shift[i][2] - shifting_vector[2]])
-    return(result_vectors)
-
-
-def coordinate_transformation_single_vector(v, input_coord_s, output_coord_s):
-    # Not to be used by the user.
-    res = []
-    if input_coord_s == output_coord_s:
-        res = v
-    if input_coord_s == 'c':
-        if output_coord_s == 'p':
-            # cartesian -> cylindrical
-            res = [sp.sqrt(v[0]*v[0]+v[1]*v[1]), sp.atan2(v[1],v[0]), v[2]]
-        if output_coord_s == 's':
-            # cartesian -> spherical
-            res = [sp.sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]), sp.atan2(sp.sqrt(v[0]*v[0]+v[1]*v[1]),v[2]), sp.atan2(v[1],v[0])]
-    if input_coord_s == 'p':
-        if output_coord_s == 'c':
-            # cylindrical -> cartesian
-            res = [v[0]*sp.cos(v[1]), v[0]*sp.sin(v[1]), v[2]]
-        if output_coord_s == 's':
-            # cylindrical -> spherical
-            res = [sp.sqrt(v[0]*v[0]+v[2]*v[2]), sp.atan2(v[0],v[2]), v[1]]
-    if input_coord_s == 's':
-        if output_coord_s == 'c':
-            # spherical -> cartesian
-            res = [v[0] * sp.sin(v[1]) * sp.cos(v[2]), v[0] * sp.sin(v[1]) * sp.sin(v[2]), v[0] * sp.cos(v[1])]
-        if output_coord_s == 'p':
-            # spherical -> cylindrical
-            res = [v[0] * sp.sin(v[1]), v[2], v[0] * sp.cos(v[1])]
-    if res == []:
-        print("Vector conversion failed. ({input_coord_s}, {output_coord_s}) isn't in the supported conversions.")
-        return(v)
-    #return([sp.simplify(res[0]), sp.simplify(res[1]), sp.simplify(res[2])])
-    return([sp.refine(res[0]), sp.refine(res[1]), sp.refine(res[2])])
-        
-    
-
-def coordinate_transformation(vectors, input_coord_s, output_coord_s):
-    # User-based function. Can pass a vector or a list of vectors.
-    # Determine shape by checking if vectors[0] is a list (vector)
-    if type(vectors[0]) == list:
-        res = []
-        for v in vectors:
-            res.append(coordinate_transformation_single_vector(v, input_coord_s, output_coord_s))
-        return(res)
-    else:
-        return(coordinate_transformation_single_vector(vectors, input_coord_s, output_coord_s))
 
 
 
-# Printing functions
+
+# -------------------------------------------------------------------------------------
+# ----------------------------- OUTPUT FUNCTIONS --------------------------------------
+# -------------------------------------------------------------------------------------
 
 def print_matrix(matrix, margin=2):
     separator = ' | '
@@ -293,7 +498,9 @@ def print_vectors(vectors, descriptor = ('', ' = '), margin=2, alignment='left',
         print(' '*margin + cur_line)
 
 
-# ------------------------- REFINERY OPERATIONS --------------------
+# -------------------------------------------------------------------------------------
+# ---------------------------- REFINERY FUNCTIONS -------------------------------------
+# -------------------------------------------------------------------------------------
 def refine_single_expression(expr):
     return(sp.refine(expr))
 
@@ -307,7 +514,9 @@ def refine_tensor(tensor):
         return(res)
 
 
-# sympy matrix operations wrappers
+# -------------------------------------------------------------------------------------
+# --------------------- SYMPY MATRIX OPERATIONS WRAPPERS ------------------------------
+# -------------------------------------------------------------------------------------
 
 def unwrap_eigenvectors(raw_output, dimension = 3, refine_expr = True):
     # returns a tuple (eigenvectors, eigenvalues)

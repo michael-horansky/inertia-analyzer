@@ -1,11 +1,12 @@
 
-from sp_matrix_operations import *
+from physics_functions import *
 
 
 # We reserve the symbols 'coor_x', 'coor_y', 'coor_z', as we will be using these for the integrals (only used in the continuous case)
 
 coor_x, coor_y, coor_z = sp.symbols('coor_x coor_y coor_z')
 
+"""
 def I_tensor(subscript, masses, disps):
     # Subscript is a two-char string ('xx', 'yz' etc...)
     I_res = 0
@@ -33,7 +34,7 @@ def I_tensor(subscript, masses, disps):
     if subscript == 'zz':
         for i in range(len(masses)):
             I_res += masses[i] * (disps[i][0] * disps[i][0] + disps[i][1] * disps[i][1])
-    return(sp.simplify(I_res))
+    return(sp.simplify(I_res))"""
 
 
 # First the user declares all parameters of the system
@@ -146,25 +147,18 @@ print("Total mass = ", total_mass)
 
 # Now we check whether we need to perform a coordinate transformation
 
-displacements = coordinate_transformation(displacements_coord, coord_s, 'c')
+displacements = tensor_coordinate_transformation(displacements_coord, coord_s, 'c')
 if coord_s != 'c':
     print(f"Displacement vectors after transformation from {coord_s_names[coord_s]} coord. system to cartesian coordinate system:")
     print_vectors(displacements, ('Object n. ', ' displacement = '), 2)
 
 # Now we find the center of mass, so we can move there.
 
-com_displacement = [0, 0, 0]
-for i in range(number_of_objects):
-    com_displacement[0] += masses[i] * displacements[i][0]
-    com_displacement[1] += masses[i] * displacements[i][1]
-    com_displacement[2] += masses[i] * displacements[i][2]
-com_displacement[0] = sp.simplify(com_displacement[0] / total_mass)
-com_displacement[1] = sp.simplify(com_displacement[1] / total_mass)
-com_displacement[2] = sp.simplify(com_displacement[2] / total_mass)
+com_displacement = get_com_displacement_discrete(masses, displacements, total_mass)
 
 print("Center of mass displacement = ( ", com_displacement[0], ";", com_displacement[1], ";", com_displacement[2], ")")
 
-com_displacements = coordinate_shift(displacements, com_displacement)
+com_displacements = coordinate_shift_discrete(displacements, com_displacement)
 print("Displacements in the CoM reference frame:")
 print_vectors(com_displacements, ('Object n. ', ' displacement = '), 2)
 #for i in range(number_of_objects):
@@ -173,15 +167,15 @@ print_vectors(com_displacements, ('Object n. ', ' displacement = '), 2)
 # Now we calculate the tensor of inertia for the center of mass
 
 I_com = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
-I_com[0][0] = I_tensor('xx', masses, com_displacements)
-I_com[0][1] = I_tensor('xy', masses, com_displacements)
-I_com[0][2] = I_tensor('xz', masses, com_displacements)
-I_com[1][0] = I_tensor('yx', masses, com_displacements)
-I_com[1][1] = I_tensor('yy', masses, com_displacements)
-I_com[1][2] = I_tensor('yz', masses, com_displacements)
-I_com[2][0] = I_tensor('zx', masses, com_displacements)
-I_com[2][1] = I_tensor('zy', masses, com_displacements)
-I_com[2][2] = I_tensor('zz', masses, com_displacements)
+I_com[0][0] = I_tensor_discrete('xx', masses, com_displacements)
+I_com[0][1] = I_tensor_discrete('xy', masses, com_displacements)
+I_com[0][2] = I_tensor_discrete('xz', masses, com_displacements)
+I_com[1][0] = I_tensor_discrete('yx', masses, com_displacements)
+I_com[1][1] = I_tensor_discrete('yy', masses, com_displacements)
+I_com[1][2] = I_tensor_discrete('yz', masses, com_displacements)
+I_com[2][0] = I_tensor_discrete('zx', masses, com_displacements)
+I_com[2][1] = I_tensor_discrete('zy', masses, com_displacements)
+I_com[2][2] = I_tensor_discrete('zz', masses, com_displacements)
 
 I_com_M = Matrix(I_com.copy())
 
@@ -225,9 +219,9 @@ def print_I_com_eigenvectors(M_evec, M_eval, V_stability):
     print_vectors(I_com_evec, ('e_', ' = '), 2, 'left', right_strings)
 
 
-print("Principal axes and their respective eigenvectors:")
+print("Principal axes and their respective eigenvalues:")
 print_I_com_eigenvectors(I_com_evec, I_com_eval, PA_stability)
-I_com_evec_coord = coordinate_transformation(I_com_evec, 'c', coord_s)
+I_com_evec_coord = tensor_coordinate_transformation(I_com_evec, 'c', coord_s)
 if coord_s != 'c':
     print(f"Principal axes after transformation from cartesian coord. system to {coord_s_names[coord_s]} coordinate system:")
     print_vectors(I_com_evec_coord, ("e'_", ' = '), 2, 'left')
